@@ -92,18 +92,31 @@ def rag_query(query, index, metadata, k=3):
         for i, r in enumerate(top_texts)
     )
 
+    # 告知 LLM 已检索到的媒体资源，避免它说"无法展示图片/视频"
+    media_hint = ""
+    if matched_image:
+        media_hint += "\n\n[系统提示：已检索到相关图片，将在界面右侧展示，请在回答中引导用户查看右侧图片区域，不要说无法提供图片。]"
+    if matched_video:
+        media_hint += "\n\n[系统提示：已检索到相关视频链接，将在界面右侧提供，请在回答中引导用户查看右侧视频区域。]"
+
     completion = client.chat.completions.create(
         model="qwen-flash",
         messages=[
             {"role": "system", "content": "你是一个专业友好的迪士尼客服助手，回答简洁清晰。"},
             {"role": "user", "content":
-                f"请根据以下背景知识回答用户问题。\n\n[背景知识]\n{context_str}\n[用户问题]\n{query}"}
+                f"请根据以下背景知识回答用户问题。\n\n[背景知识]\n{context_str}\n[用户问题]\n{query}{media_hint}"}
         ]
     )
 
+    # 将图片路径转为绝对路径，避免工作目录不同导致图片加载失败
+    image_path = None
+    if matched_image:
+        raw_path = matched_image["metadata"].get("path", "")
+        image_path = os.path.abspath(raw_path) if raw_path else None
+
     return {
         "answer": completion.choices[0].message.content,
-        "image_path": matched_image["metadata"].get("path") if matched_image else None,
+        "image_path": image_path,
         "video_url": matched_video["metadata"].get("url") if matched_video else None,
         "sources": [
             {
@@ -122,30 +135,29 @@ faiss_index, faiss_metadata = load_index()
 
 # ─── Gradio 事件处理 ─────────────────────────────────────────────────────────
 def on_user_submit(message, history):
-    """将用户消息追加到对话历史（tuple格式），清空输入框"""
+    """将用户消息追加到对话历史，清空输入框，同时把原始字符串存入 State"""
     history = history or []
-    history.append((message, None))   # bot_msg 占位 None，等待回复
-    return "", history
+    history.append({"role": "user", "content": message})
+    return "", history, message          # 第三个返回值写入 last_query State
 
 
-def on_bot_respond(history):
-    """根据最后一条未回复的用户消息执行 RAG 并填入回复"""
-    if not history or history[-1][1] is not None:
+def on_bot_respond(last_query, history):
+    """用 State 里保存的原始字符串执行 RAG，避免 Gradio 序列化破坏 content 类型"""
+    query = last_query
+    if not query or not history:
         return history, gr.update(visible=False), gr.update(value="", visible=False), ""
 
-    query = history[-1][0]
-
     if faiss_index is None:
-        history[-1] = (query, "⚠️ 知识库尚未构建，请先运行 `4-disney_build_index.py` 生成索引文件。")
+        history.append({"role": "assistant", "content": "⚠️ 知识库尚未构建，请先运行 `4-disney_build_index.py` 生成索引文件。"})
         return history, gr.update(visible=False), gr.update(value="", visible=False), ""
 
     try:
         result = rag_query(query, faiss_index, faiss_metadata)
     except Exception as e:
-        history[-1] = (query, f"❌ 查询出错: {e}")
+        history.append({"role": "assistant", "content": f"❌ 查询出错: {e}"})
         return history, gr.update(visible=False), gr.update(value="", visible=False), ""
 
-    history[-1] = (query, result["answer"])
+    history.append({"role": "assistant", "content": result["answer"]})
 
     img_update = (
         gr.update(value=result["image_path"], visible=True)
@@ -173,7 +185,7 @@ def on_bot_respond(history):
 
 
 def on_clear():
-    return [], gr.update(visible=False), gr.update(value="", visible=False), ""
+    return [], gr.update(visible=False), gr.update(value="", visible=False), ""  # [] = 空 messages 列表
 
 
 # ─── UI 布局 ─────────────────────────────────────────────────────────────────
@@ -190,7 +202,6 @@ with gr.Blocks(title="迪士尼AI客服助手") as demo:
             chatbot = gr.Chatbot(
                 label="对话",
                 height=500,
-                show_copy_button=True,
             )
             with gr.Row():
                 msg_box = gr.Textbox(
@@ -207,7 +218,6 @@ with gr.Blocks(title="迪士尼AI客服助手") as demo:
             result_image = gr.Image(
                 label="相关图片",
                 visible=False,
-                show_download_button=True,
                 height=260,
             )
             result_video = gr.HTML(visible=False)
@@ -226,19 +236,21 @@ with gr.Blocks(title="迪士尼AI客服助手") as demo:
         label="示例问题（点击填入）",
     )
 
+    last_query = gr.State("")   # 保存未经 Gradio 序列化的原始用户输入
+
     # ── 事件绑定 ─────────────────────────────────────────────────────
     _outputs = [chatbot, result_image, result_video, sources_md]
 
     send_btn.click(
-        on_user_submit, [msg_box, chatbot], [msg_box, chatbot]
+        on_user_submit, [msg_box, chatbot], [msg_box, chatbot, last_query]
     ).then(
-        on_bot_respond, [chatbot], _outputs
+        on_bot_respond, [last_query, chatbot], _outputs
     )
 
     msg_box.submit(
-        on_user_submit, [msg_box, chatbot], [msg_box, chatbot]
+        on_user_submit, [msg_box, chatbot], [msg_box, chatbot, last_query]
     ).then(
-        on_bot_respond, [chatbot], _outputs
+        on_bot_respond, [last_query, chatbot], _outputs
     )
 
     clear_btn.click(on_clear, outputs=_outputs)
@@ -246,8 +258,8 @@ with gr.Blocks(title="迪士尼AI客服助手") as demo:
 
 if __name__ == "__main__":
     demo.launch(
-        server_name="0.0.0.0",
-        server_port=7860,
+        server_name="127.0.0.1",
+        server_port=9000,
         share=False,
         inbrowser=True,
         theme=gr.themes.Soft(),
