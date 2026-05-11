@@ -26,8 +26,10 @@ client = OpenAI(
 MULTIMODAL_EMBEDDING_MODEL = "tongyi-embedding-vision-plus"
 INDEX_FILE = "disney_index.faiss"
 METADATA_FILE = "disney_metadata.json"
-IMAGE_KEYWORDS = ["图片", "海报", "照片", "看看", "长什么样", "图"]
-VIDEO_KEYWORDS = ["视频", "录像", "影片", "看一下", "播放"]
+IMAGE_KEYWORDS = ["图片", "海报", "照片", "看看", "长什么样", "图",
+                  "image", "photo", "poster", "picture", "show", "look", "see"]
+VIDEO_KEYWORDS = ["视频", "录像", "影片", "看一下", "播放",
+                  "video", "watch", "play", "clip", "footage"]
 MEDIA_DISTANCE_THRESHOLD = 3.0
 
 
@@ -50,6 +52,12 @@ def get_text_embedding(text):
     if resp.status_code != HTTPStatus.OK:
         raise Exception(f"Embedding 失败: {resp.message}")
     return resp.output["embeddings"][0]["embedding"]
+
+
+def detect_language(text):
+    """通过中文字符占比判断语言：中文字符 > 20% 视为中文，否则视为英文"""
+    chinese = sum(1 for c in text if '一' <= c <= '鿿')
+    return "zh" if len(text) > 0 and chinese / len(text) > 0.2 else "en"
 
 
 def detect_media_intent(query):
@@ -99,12 +107,19 @@ def rag_query(query, index, metadata, k=3):
     if matched_video:
         media_hint += "\n\n[系统提示：已检索到相关视频链接，将在界面右侧提供，请在回答中引导用户查看右侧视频区域。]"
 
+    lang = detect_language(query)
+    if lang == "en":
+        system_prompt = "You are a helpful Disney customer service assistant. Be concise and friendly. You MUST reply in English regardless of the language of the background knowledge."
+        user_prompt = f"Answer the user's question based on the following background knowledge.\n\n[Background Knowledge]\n{context_str}\n[User Question]\n{query}{media_hint}"
+    else:
+        system_prompt = "你是一个专业友好的迪士尼客服助手，回答简洁清晰。必须用中文回答。"
+        user_prompt = f"请根据以下背景知识回答用户问题。\n\n[背景知识]\n{context_str}\n[用户问题]\n{query}{media_hint}"
+
     completion = client.chat.completions.create(
         model="qwen-flash",
         messages=[
-            {"role": "system", "content": "你是一个专业友好的迪士尼客服助手，回答简洁清晰。"},
-            {"role": "user", "content":
-                f"请根据以下背景知识回答用户问题。\n\n[背景知识]\n{context_str}\n[用户问题]\n{query}{media_hint}"}
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
         ]
     )
 
