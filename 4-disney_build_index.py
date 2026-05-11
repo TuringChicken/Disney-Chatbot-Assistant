@@ -20,7 +20,7 @@ if not DASHSCOPE_API_KEY:
 
 dashscope.api_key = DASHSCOPE_API_KEY
 
-DOCS_DIR = "CASE-迪士尼RAG助手/disney_knowledge_base"
+DOCS_DIR = "disney_knowledge_base"
 IMG_DIR = os.path.join(DOCS_DIR, "images")
 MULTIMODAL_EMBEDDING_MODEL = "tongyi-embedding-vision-plus"
 

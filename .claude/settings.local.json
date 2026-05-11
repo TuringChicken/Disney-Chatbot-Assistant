@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(D:\\\\llm_study\\\\.venv\\\\Scripts\\\\python.exe *)",
+      "PowerShell(& \"D:\\\\llm_study\\\\.venv\\\\Scripts\\\\python.exe\" -c \"import gradio; print\\(gradio.__version__\\)\")",
+      "PowerShell(& \"D:\\\\llm_study\\\\.venv\\\\Scripts\\\\python.exe\" -c \"import faiss, dashscope, openai, docx; print\\('all ok'\\)\")",
+      "PowerShell(& \"D:\\\\llm_study\\\\.venv\\\\Scripts\\\\python.exe\" -c \"import ast; ast.parse\\(open\\('D:/llm_study/14-RAG多模态数据处理/CASE-迪士尼RAG助手/6-disney_app.py', encoding='utf-8'\\).read\\(\\)\\); print\\('语法检查通过'\\)\")",
+      "PowerShell(& \"D:\\\\llm_study\\\\.venv\\\\Scripts\\\\python.exe\" -c \"import ast; ast.parse\\(open\\('D:/llm_study/14-RAG多模态数据处理/CASE-迪士尼RAG助手/6-disney_app.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")"
+    ]
+  }
+}
