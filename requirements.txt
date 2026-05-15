@@ -1,10 +1,10 @@
 dashscope==1.25.5
 faiss_cpu==1.7.4
-fitz==0.0.1.dev2
 numpy==2.4.0
 openai==2.14.0
 Pillow==12.0.0
-pytesseract==0.3.10
+pymupdf==1.27.2.3
 python_docx==1.1.2
+python_pptx==1.0.2
 torch==2.7.0
 transformers==4.49.0
