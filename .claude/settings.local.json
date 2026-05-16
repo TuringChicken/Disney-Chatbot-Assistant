@@ -20,7 +20,8 @@
       "PowerShell(conda env *)",
       "PowerShell(Get-Command *)",
       "PowerShell(Get-Process *)",
-      "PowerShell(git *)"
+      "PowerShell(git *)",
+      "PowerShell(Get-ChildItem \"D:\\\\llm_study\\\\14-RAG多模态数据处理\\\\CASE-迪士尼RAG助手\\\\Disney_RAG_KnowledgeBase\" -Recurse -File | Where-Object { $_.Extension -match '\\\\.\\(docx|doc|pdf|pptx|ppt\\)$' } | Select-Object FullName, Length | Sort-Object FullName)"
     ]
   }
 }

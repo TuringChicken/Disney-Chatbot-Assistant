@@ -46,6 +46,48 @@ VIDEO_KEYWORDS = ["视频", "录像", "影片", "看一下", "播放",
                   "video", "watch", "play", "clip", "footage"]
 MEDIA_DISTANCE_THRESHOLD = 3.0
 
+# 自动分类路由规则：按特征关键词匹配，命中数最多的分类胜出，无命中则使用全量索引
+# 顺序不影响结果，关键词尽量选取分类内独有的、区分度高的词
+_ROUTE_RULES = [
+    ("特殊情况与应急预案", [
+        "紧急", "走失", "急救", "医疗", "台风", "闭园", "天气", "预警",
+        "应急", "救护", "无障碍", "轮椅", "安全事故",
+        "emergency", "lost child", "medical", "typhoon", "closure",
+    ]),
+    ("内部知识与工具", [
+        "CRM", "工单", "员工", "培训", "岗位", "导览", "手册",
+        "演职", "内部", "P1", "P2", "Salesforce", "操作手册",
+        "staff", "employee", "training", "manual",
+    ]),
+    ("客户关系与支持话术", [
+        "话术", "奇迹时刻", "补偿", "安抚", "沟通",
+        "常见问题", "禁用词", "HEARD",
+        "magic moment", "script",
+    ]),
+    ("运营流程与标准作业程序", [
+        "退款", "退票", "改期", "预订", "订单", "客诉",
+        "投诉处理", "升级", "酒店预订", "官方订票",
+        "refund", "booking", "complaint",
+    ]),
+    ("产品与服务详情", [
+        "门票", "票价", "年票", "餐饮", "餐厅", "游乐", "设施",
+        "身高", "邮轮", "酒店", "会员", "尊享卡", "礼宾",
+        "价格", "开放时间", "巡游", "烟花", "地图",
+        "ticket", "price", "restaurant", "cruise", "hotel", "annual pass",
+    ]),
+]
+
+
+def auto_detect_category(query: str) -> str:
+    """根据查询关键词自动匹配最相关的分类索引，无命中时回退全量索引"""
+    q = query.lower()
+    scores = {cat: sum(1 for kw in kws if kw.lower() in q)
+              for cat, kws in _ROUTE_RULES}
+    best_cat, best_score = max(scores.items(), key=lambda x: x[1])
+    detected = best_cat if best_score > 0 else "全部"
+    print(f"[路由] 查询='{query[:30]}' → 分类='{detected}' (得分={best_score})")
+    return detected
+
 
 # ─── 核心 RAG 函数 ──────────────────────────────────────────────────────────
 def load_index(index_file=None, metadata_file=None):
@@ -185,12 +227,13 @@ def on_user_submit(message, history):
     return "", history, message          # 第三个返回值写入 last_query State
 
 
-def on_bot_respond(last_query, history, category):
+def on_bot_respond(last_query, history):
     """用 State 里保存的原始字符串执行 RAG，避免 Gradio 序列化破坏 content 类型"""
     query = last_query
     if not query or not history:
         return history, gr.update(visible=False), gr.update(value="", visible=False), ""
 
+    category = auto_detect_category(query)
     faiss_index, faiss_metadata = get_index(category)
     if faiss_index is None:
         history.append({"role": "assistant", "content": "⚠️ 知识库尚未构建，请先运行 `7-disney_build_full_index.py` 生成索引文件。"})
@@ -256,14 +299,7 @@ with gr.Blocks(title="迪士尼AI客服助手") as demo:
                     max_lines=3,
                 )
                 send_btn = gr.Button("发送", scale=1, variant="primary")
-            with gr.Row():
-                category_dd = gr.Dropdown(
-                    choices=list(CATEGORY_INDEXES.keys()),
-                    value="全部",
-                    label="知识库分类筛选",
-                    scale=3,
-                )
-                clear_btn = gr.Button("清空对话", size="sm", scale=1)
+            clear_btn = gr.Button("清空对话", size="sm")
 
         # ── 媒体 & 来源面板 ──────────────────────────────────────────
         with gr.Column(scale=2):
@@ -296,13 +332,13 @@ with gr.Blocks(title="迪士尼AI客服助手") as demo:
     send_btn.click(
         on_user_submit, [msg_box, chatbot], [msg_box, chatbot, last_query]
     ).then(
-        on_bot_respond, [last_query, chatbot, category_dd], _outputs
+        on_bot_respond, [last_query, chatbot], _outputs
     )
 
     msg_box.submit(
         on_user_submit, [msg_box, chatbot], [msg_box, chatbot, last_query]
     ).then(
-        on_bot_respond, [last_query, chatbot, category_dd], _outputs
+        on_bot_respond, [last_query, chatbot], _outputs
     )
 
     clear_btn.click(on_clear, outputs=_outputs)
@@ -311,7 +347,7 @@ with gr.Blocks(title="迪士尼AI客服助手") as demo:
 if __name__ == "__main__":
     demo.launch(
         server_name="127.0.0.1",
-        server_port=9000,
+        server_port=9001,
         share=False,
         inbrowser=True,
         theme=gr.themes.Soft(),
