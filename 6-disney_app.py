@@ -24,9 +24,14 @@ client = OpenAI(
 )
 
 MULTIMODAL_EMBEDDING_MODEL = "tongyi-embedding-vision-plus"
+
+# 新知识库目录：由 7-disney_build_full_index.py 生成，包含全量索引和5个分类子索引
+# 旧的单文件索引（disney_index.faiss / disney_metadata.json）已废弃
 INDEX_DIR = "disney_indexes"
 FULL_INDEX_FILE = os.path.join(INDEX_DIR, "disney_full_index.faiss")
 FULL_METADATA_FILE = os.path.join(INDEX_DIR, "disney_full_metadata.json")
+
+# 每个分类对应一对独立的 FAISS 索引，用于精确范围检索；"全部"指向合并的全量索引
 CATEGORY_INDEXES = {
     "全部":         (FULL_INDEX_FILE, FULL_METADATA_FILE),
     "产品与服务详情":     (os.path.join(INDEX_DIR, "cat1_products_index.faiss"),   os.path.join(INDEX_DIR, "cat1_products_metadata.json")),
@@ -57,7 +62,7 @@ def load_index(index_file=None, metadata_file=None):
     return idx, meta
 
 
-# 预加载所有分类索引
+# 按需缓存：全量索引在启动时预加载，分类索引首次使用时才加载，避免一次性占用过多内存
 _index_cache: dict = {}
 
 def get_index(category: str):
