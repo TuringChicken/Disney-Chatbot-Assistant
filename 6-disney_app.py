@@ -24,8 +24,17 @@ client = OpenAI(
 )
 
 MULTIMODAL_EMBEDDING_MODEL = "tongyi-embedding-vision-plus"
-INDEX_FILE = "disney_index.faiss"
-METADATA_FILE = "disney_metadata.json"
+INDEX_DIR = "disney_indexes"
+FULL_INDEX_FILE = os.path.join(INDEX_DIR, "disney_full_index.faiss")
+FULL_METADATA_FILE = os.path.join(INDEX_DIR, "disney_full_metadata.json")
+CATEGORY_INDEXES = {
+    "全部":         (FULL_INDEX_FILE, FULL_METADATA_FILE),
+    "产品与服务详情":     (os.path.join(INDEX_DIR, "cat1_products_index.faiss"),   os.path.join(INDEX_DIR, "cat1_products_metadata.json")),
+    "运营流程与标准作业程序": (os.path.join(INDEX_DIR, "cat2_operations_index.faiss"), os.path.join(INDEX_DIR, "cat2_operations_metadata.json")),
+    "特殊情况与应急预案":   (os.path.join(INDEX_DIR, "cat3_emergency_index.faiss"), os.path.join(INDEX_DIR, "cat3_emergency_metadata.json")),
+    "客户关系与支持话术":   (os.path.join(INDEX_DIR, "cat4_customer_index.faiss"),  os.path.join(INDEX_DIR, "cat4_customer_metadata.json")),
+    "内部知识与工具":     (os.path.join(INDEX_DIR, "cat5_internal_index.faiss"),  os.path.join(INDEX_DIR, "cat5_internal_metadata.json")),
+}
 IMAGE_KEYWORDS = ["图片", "海报", "照片", "看看", "长什么样", "图",
                   "image", "photo", "poster", "picture", "show", "look", "see"]
 VIDEO_KEYWORDS = ["视频", "录像", "影片", "看一下", "播放",
@@ -34,14 +43,28 @@ MEDIA_DISTANCE_THRESHOLD = 3.0
 
 
 # ─── 核心 RAG 函数 ──────────────────────────────────────────────────────────
-def load_index():
-    if not os.path.exists(INDEX_FILE) or not os.path.exists(METADATA_FILE):
+def load_index(index_file=None, metadata_file=None):
+    if index_file is None:
+        index_file = FULL_INDEX_FILE
+    if metadata_file is None:
+        metadata_file = FULL_METADATA_FILE
+    if not os.path.exists(index_file) or not os.path.exists(metadata_file):
         return None, None
-    idx = faiss.read_index(INDEX_FILE)
-    with open(METADATA_FILE, "r", encoding="utf-8") as f:
+    idx = faiss.read_index(index_file)
+    with open(metadata_file, "r", encoding="utf-8") as f:
         meta = json.load(f)
-    print(f"知识库已加载: {idx.ntotal} 条记录")
+    print(f"知识库已加载: {idx.ntotal} 条记录  [{index_file}]")
     return idx, meta
+
+
+# 预加载所有分类索引
+_index_cache: dict = {}
+
+def get_index(category: str):
+    if category not in _index_cache:
+        idx_file, meta_file = CATEGORY_INDEXES[category]
+        _index_cache[category] = load_index(idx_file, meta_file)
+    return _index_cache[category]
 
 
 def get_text_embedding(text):
@@ -68,7 +91,7 @@ def detect_media_intent(query):
     )
 
 
-def rag_query(query, index, metadata, k=3):
+def rag_query(query, index, metadata, k=3, category="全部"):
     vec = np.array([get_text_embedding(query)]).astype("float32")
     distances, indices = index.search(vec, index.ntotal)
 
@@ -135,6 +158,7 @@ def rag_query(query, index, metadata, k=3):
         "video_url": matched_video["metadata"].get("url") if matched_video else None,
         "sources": [
             {
+                "category": r["metadata"].get("category", "-"),
                 "source": r["metadata"]["source"],
                 "similarity": r["similarity"],
                 "content": r["metadata"]["content"][:100]
@@ -144,8 +168,8 @@ def rag_query(query, index, metadata, k=3):
     }
 
 
-# ─── 全局加载索引 ────────────────────────────────────────────────────────────
-faiss_index, faiss_metadata = load_index()
+# ─── 预加载全量索引 ──────────────────────────────────────────────────────────
+_index_cache["全部"] = load_index(FULL_INDEX_FILE, FULL_METADATA_FILE)
 
 
 # ─── Gradio 事件处理 ─────────────────────────────────────────────────────────
@@ -156,18 +180,19 @@ def on_user_submit(message, history):
     return "", history, message          # 第三个返回值写入 last_query State
 
 
-def on_bot_respond(last_query, history):
+def on_bot_respond(last_query, history, category):
     """用 State 里保存的原始字符串执行 RAG，避免 Gradio 序列化破坏 content 类型"""
     query = last_query
     if not query or not history:
         return history, gr.update(visible=False), gr.update(value="", visible=False), ""
 
+    faiss_index, faiss_metadata = get_index(category)
     if faiss_index is None:
-        history.append({"role": "assistant", "content": "⚠️ 知识库尚未构建，请先运行 `4-disney_build_index.py` 生成索引文件。"})
+        history.append({"role": "assistant", "content": "⚠️ 知识库尚未构建，请先运行 `7-disney_build_full_index.py` 生成索引文件。"})
         return history, gr.update(visible=False), gr.update(value="", visible=False), ""
 
     try:
-        result = rag_query(query, faiss_index, faiss_metadata)
+        result = rag_query(query, faiss_index, faiss_metadata, category=category)
     except Exception as e:
         history.append({"role": "assistant", "content": f"❌ 查询出错: {e}"})
         return history, gr.update(visible=False), gr.update(value="", visible=False), ""
@@ -192,9 +217,9 @@ def on_bot_respond(last_query, history):
     else:
         video_update = gr.update(value="", visible=False)
 
-    sources_md = "| 来源文件 | 相似度 | 内容摘要 |\n|---------|--------|----------|\n"
+    sources_md = "| 分类 | 来源文件 | 相似度 | 内容摘要 |\n|------|---------|--------|----------|\n"
     for s in result["sources"]:
-        sources_md += f"| {s['source']} | {s['similarity']:.4f} | {s['content']}... |\n"
+        sources_md += f"| {s.get('category', '-')} | {s['source']} | {s['similarity']:.4f} | {s['content']}... |\n"
 
     return history, img_update, video_update, sources_md
 
@@ -226,7 +251,14 @@ with gr.Blocks(title="迪士尼AI客服助手") as demo:
                     max_lines=3,
                 )
                 send_btn = gr.Button("发送", scale=1, variant="primary")
-            clear_btn = gr.Button("清空对话", size="sm")
+            with gr.Row():
+                category_dd = gr.Dropdown(
+                    choices=list(CATEGORY_INDEXES.keys()),
+                    value="全部",
+                    label="知识库分类筛选",
+                    scale=3,
+                )
+                clear_btn = gr.Button("清空对话", size="sm", scale=1)
 
         # ── 媒体 & 来源面板 ──────────────────────────────────────────
         with gr.Column(scale=2):
@@ -259,13 +291,13 @@ with gr.Blocks(title="迪士尼AI客服助手") as demo:
     send_btn.click(
         on_user_submit, [msg_box, chatbot], [msg_box, chatbot, last_query]
     ).then(
-        on_bot_respond, [last_query, chatbot], _outputs
+        on_bot_respond, [last_query, chatbot, category_dd], _outputs
     )
 
     msg_box.submit(
         on_user_submit, [msg_box, chatbot], [msg_box, chatbot, last_query]
     ).then(
-        on_bot_respond, [last_query, chatbot], _outputs
+        on_bot_respond, [last_query, chatbot, category_dd], _outputs
     )
 
     clear_btn.click(on_clear, outputs=_outputs)
