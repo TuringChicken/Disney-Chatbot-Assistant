@@ -5,7 +5,22 @@
       "PowerShell(& \"D:\\\\llm_study\\\\.venv\\\\Scripts\\\\python.exe\" -c \"import gradio; print\\(gradio.__version__\\)\")",
       "PowerShell(& \"D:\\\\llm_study\\\\.venv\\\\Scripts\\\\python.exe\" -c \"import faiss, dashscope, openai, docx; print\\('all ok'\\)\")",
       "PowerShell(& \"D:\\\\llm_study\\\\.venv\\\\Scripts\\\\python.exe\" -c \"import ast; ast.parse\\(open\\('D:/llm_study/14-RAG多模态数据处理/CASE-迪士尼RAG助手/6-disney_app.py', encoding='utf-8'\\).read\\(\\)\\); print\\('语法检查通过'\\)\")",
-      "PowerShell(& \"D:\\\\llm_study\\\\.venv\\\\Scripts\\\\python.exe\" -c \"import ast; ast.parse\\(open\\('D:/llm_study/14-RAG多模态数据处理/CASE-迪士尼RAG助手/6-disney_app.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")"
+      "PowerShell(& \"D:\\\\llm_study\\\\.venv\\\\Scripts\\\\python.exe\" -c \"import ast; ast.parse\\(open\\('D:/llm_study/14-RAG多模态数据处理/CASE-迪士尼RAG助手/6-disney_app.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(Get-ChildItem -Recurse -Force)",
+      "Bash(Select-Object FullName)",
+      "Bash(Sort-Object FullName)",
+      "PowerShell(D:\\\\llm_study\\\\.venv\\\\Scripts\\\\python.exe -c \"import fitz; print\\('fitz version:', fitz.__version__\\); _ = fitz.open; print\\('PyMuPDF OK'\\)\" 2>&1)",
+      "PowerShell(D:\\\\llm_study\\\\.venv\\\\Scripts\\\\python.exe -c \"from pptx import Presentation; print\\('python-pptx OK'\\)\")",
+      "PowerShell(D:\\\\llm_study\\\\.venv\\\\Scripts\\\\pip install pymupdf python-pptx 2>&1)",
+      "PowerShell(D:\\\\llm_study\\\\.venv\\\\Scripts\\\\python.exe -c \"import fitz; from pptx import Presentation; print\\('PyMuPDF', fitz.__version__\\); print\\('python-pptx OK'\\)\")",
+      "PowerShell(Get-ChildItem \"D:\\\\llm_study\\\\14-RAG多模态数据处理\\\\CASE-迪士尼RAG助手\\\\disney_indexes\" | Select-Object Name, @{N='Size\\(KB\\)';E={[math]::Round\\($_.Length/1KB,1\\)}})",
+      "Bash(git add *)",
+      "Bash(git push *)",
+      "Bash(Select-Object Name)",
+      "PowerShell(conda env *)",
+      "PowerShell(Get-Command *)",
+      "PowerShell(Get-Process *)",
+      "PowerShell(git *)"
     ]
   }
 }
