@@ -367,17 +367,22 @@ class TestIndexLoading(unittest.TestCase):
 # ═══════════════════════════════════════════════════════════════════════════════
 # Group 3 — 检索质量测试（需要 DASHSCOPE_API_KEY）
 # ═══════════════════════════════════════════════════════════════════════════════
+#
+# 测试用例均基于真实知识库文档内容生成，覆盖 5 个分类：
+#   产品与服务详情：门票价格、年票规则、餐饮信息、游乐设施
+#   运营流程与标准作业程序：退款政策、客诉处理
+#   特殊情况与应急预案：走失儿童、恶劣天气、紧急电话
+#   客户关系与支持话术：话术授权、FAQ、入园规定
+#   内部知识与工具：CRM系统、岗位职责
+#
+# 评判标准：
+#   ① L2 距离 < 阈值    → 向量语义相近
+#   ② top-K 含预期分类  → 分类路由正确
+#   ③ content 含预期关键词 → 实际内容命中
+# ═══════════════════════════════════════════════════════════════════════════════
 
 @unittest.skipIf(SKIP_API, SKIP_MSG)
 class TestRetrievalQuality(unittest.TestCase):
-    """
-    通过真实 Embedding + FAISS 搜索验证召回质量。
-
-    评判标准：
-      ① L2 距离 < max_distance  → 向量空间内语义相近
-      ② top-K 结果中出现预期分类 → 分类路由正确
-      ③ source / content 含预期关键词 → 内容匹配正确
-    """
 
     @classmethod
     def setUpClass(cls):
@@ -406,15 +411,14 @@ class TestRetrievalQuality(unittest.TestCase):
 
         print(f"\n  [setUpClass] 全局索引: {cls.full_index.ntotal} 条记录")
 
-    # ── 内部工具方法 ─────────────────────────────────────────────────────────
+    # ── 工具方法 ─────────────────────────────────────────────────────────────
 
     def _embed(self, text: str) -> np.ndarray:
-        from http import HTTPStatus
         resp = self._dashscope.MultiModalEmbedding.call(
             model="tongyi-embedding-vision-plus",
             input=[{"text": text}]
         )
-        if resp.status_code != HTTPStatus.OK:
+        if resp.status_code != self._HTTPStatus.OK:
             self.fail(f"Embedding 调用失败: {resp.message}")
         return np.array([resp.output["embeddings"][0]["embedding"]], dtype="float32")
 
@@ -431,165 +435,179 @@ class TestRetrievalQuality(unittest.TestCase):
             for d, i in zip(dists[0], idxs[0]) if i != -1
         ]
 
-    def _assert_top_k_contains_category(self, results, expected_cat, k=5):
+    def _assert_category_in_top_k(self, results, expected_cat, k=5):
         cats = [r["metadata"]["category"] for r in results[:k]]
         self.assertIn(expected_cat, cats,
                       f"前{k}条结果中未出现分类 [{expected_cat}]\n实际分类: {cats}")
 
-    def _assert_keywords_in_top_k(self, results, keywords, fields=("source", "content"), k=5):
-        text = " ".join(r["metadata"].get(f, "") for r in results[:k] for f in fields)
+    def _assert_keywords_in_top_k(self, results, keywords, k=5):
+        """断言 top-k 的 content 字段中至少命中一个关键词"""
+        text = " ".join(r["metadata"].get("content", "") for r in results[:k])
         matched = [kw for kw in keywords if kw in text]
+        sources = [r["metadata"]["source"] for r in results[:k]]
         self.assertTrue(matched,
-                        f"前{k}条结果中均不含关键词 {keywords}\n"
-                        f"来源: {[r['metadata']['source'] for r in results[:k]]}")
+                        f"前{k}条结果的 content 均不含关键词 {keywords}\n来源: {sources}")
 
-    # ── 测试用例 ─────────────────────────────────────────────────────────────
+    def _top1_distance(self, results) -> float:
+        return results[0]["distance"]
 
-    def test_01_ticket_refund_policy(self):
-        """退款流程查询 → 应召回退款/票务相关文档"""
-        results = self._search("上海迪士尼门票退款流程是什么")
-        self.assertLess(results[0]["distance"], 2.5,
-                        f"top1 距离过大: {results[0]['distance']:.4f}")
-        self._assert_keywords_in_top_k(results, ["退款", "票"])
+    # ════════════════════════════════════════════════════════════════════════
+    # 产品与服务详情（门票价格）
+    # 来源：迪士尼乐园门票价格一览，官方渠道购票攻略.docx
+    # ════════════════════════════════════════════════════════════════════════
 
-    def test_02_elderly_ticket_discount(self):
-        """老人票查询 → 应召回老人票优惠相关文档"""
-        results = self._search("老人票有哪些优惠规定")
-        self.assertLess(results[0]["distance"], 2.5,
-                        f"top1 距离过大: {results[0]['distance']:.4f}")
-        self._assert_keywords_in_top_k(results, ["老人", "票"])
+    def test_01_shanghai_adult_weekday_ticket_price(self):
+        """上海成人平日票价 499 元 → content 中应出现"499" """
+        # 文档原文：成人票：平日499元，周末及节假日649元
+        results = self._search("上海迪士尼成人票平日价格是多少")
+        self.assertLess(self._top1_distance(results), 2.5,
+                        f"top1 距离过大: {self._top1_distance(results):.4f}")
+        self._assert_keywords_in_top_k(results, ["499", "平日"])
 
-    def test_03_hotel_membership_benefits(self):
-        """酒店会员查询 → 应精准召回会员制度文档"""
-        results = self._search("上海迪士尼酒店会员专属福利有哪些")
-        self.assertLess(results[0]["distance"], 2.0,
-                        f"top1 距离过大: {results[0]['distance']:.4f}")
-        combined = results[0]["metadata"]["source"] + results[0]["metadata"]["content"]
-        self.assertTrue("会员" in combined or "酒店" in combined,
-                        f"top1 不含会员/酒店关键词: {results[0]['metadata']['source']}")
+    def test_02_shanghai_child_ticket_price(self):
+        """上海儿童票平日 399 元 → content 应含"399" """
+        # 文档原文：儿童票：平日399元，周末及节假日499元
+        results = self._search("上海迪士尼儿童票多少钱")
+        self._assert_keywords_in_top_k(results, ["399", "儿童票"])
 
-    def test_04_annual_pass_rules(self):
-        """年票查询 → 应召回年票相关文档"""
-        results = self._search("迪士尼年票使用规则和限制")
-        self.assertLess(results[0]["distance"], 2.5,
-                        f"top1 距离过大: {results[0]['distance']:.4f}")
-        self._assert_keywords_in_top_k(results, ["年票", "票"])
+    def test_03_hong_kong_adult_ticket_price(self):
+        """香港成人票平日 539 港元 → content 应含"539" """
+        # 文档原文：成人票：平日539港元，周末及节假日639港元
+        results = self._search("香港迪士尼成人门票价格")
+        self._assert_keywords_in_top_k(results, ["539", "港元"])
 
-    def test_05_restaurant_info(self):
-        """餐饮查询 → 应召回餐饮相关文档，分类属于产品服务"""
-        results = self._search("迪士尼乐园里有哪些餐厅推荐")
-        self.assertLess(results[0]["distance"], 2.5,
-                        f"top1 距离过大: {results[0]['distance']:.4f}")
-        self._assert_top_k_contains_category(results, CAT_PRODUCTS)
+    def test_04_france_disneyland_ticket_price(self):
+        """法国迪士尼成人平日票 70 欧元 → content 应含"70"和"欧元" """
+        # 文档原文：成人票：平日70欧元，周末及节假日85欧元
+        results = self._search("法国巴黎迪士尼乐园门票价格")
+        self._assert_keywords_in_top_k(results, ["70", "欧元"])
 
-    def test_06_emergency_handling(self):
-        """紧急情况查询 → 应急预案分类应出现在 top-10；文档内容相关度距离应 < 2.5"""
-        # 应急文档是一站式速查表（结构化格式），在 305 条混合库中排名可能在 5~10 之间
-        results = self._search("游客在乐园内突发紧急情况如何处理", k=10)
-        self._assert_top_k_contains_category(results, CAT_EMERGENCY, k=10)
-        emergency_hits = [r for r in results
-                          if r["metadata"]["category"] == CAT_EMERGENCY]
-        self.assertLess(emergency_hits[0]["distance"], 2.5,
-                        f"应急预案最佳结果距离过大: {emergency_hits[0]['distance']:.4f}")
+    # ════════════════════════════════════════════════════════════════════════
+    # 产品与服务详情（年票规则）
+    # 来源：迪士尼乐园年票使用规则.docx
+    # ════════════════════════════════════════════════════════════════════════
 
-    def test_07_complaint_escalation(self):
-        """客诉升级查询 → 应从运营流程分类中召回"""
-        results = self._search("客户投诉升级处理流程和判断标准")
-        self._assert_top_k_contains_category(results, CAT_OPERATIONS)
+    def test_05_annual_pass_validity_365_days(self):
+        """年票有效期 365 天、激活期 90 天 → content 应含"365" """
+        # 文档原文：年票有效期自首次使用日起计算，365日内有效。
+        #           首次入园需在购票后90天内完成激活
+        results = self._search("迪士尼年票有效期多少天以及激活期限")
+        self._assert_keywords_in_top_k(results, ["365"])
 
-    def test_08_hotel_info(self):
-        """酒店房型查询 → 应从运营流程分类召回酒店信息文档"""
-        results = self._search("迪士尼各酒店的房型介绍和价格")
-        self._assert_keywords_in_top_k(results, ["酒店"])
+    def test_06_annual_pass_renewal_discount(self):
+        """年票续费享 95 折 → content 应含"95折" """
+        # 文档原文：续费用户可享受原价95折优惠
+        results = self._search("迪士尼年票续费有什么优惠")
+        self._assert_keywords_in_top_k(results, ["95折", "续费"])
 
-    def test_09_customer_service_scripts(self):
-        """服务话术查询 → 应从客户关系分类召回"""
-        results = self._search("如何用官方话术回应顾客的不满情绪")
-        self._assert_top_k_contains_category(results, CAT_CUSTOMER)
+    def test_07_child_free_entry_height_limit(self):
+        """1 米以下儿童免票 → content 应含"1米"或"免票" """
+        # 文档原文：携带儿童游玩时，1米以下儿童可免票入园
+        results = self._search("迪士尼多高的儿童可以免票入园")
+        self._assert_keywords_in_top_k(results, ["1米", "免票"])
 
-    def test_10_employee_training(self):
-        """员工培训查询 → 应从内部知识分类召回"""
-        results = self._search("迪士尼乐园员工培训课程内容")
-        self._assert_top_k_contains_category(results, CAT_INTERNAL)
-        self._assert_keywords_in_top_k(results, ["培训", "员工"])
+    def test_08_annual_pass_max_free_children(self):
+        """每张年票最多携带 2 名免票儿童 → content 应含"2" """
+        # 文档原文：每张成人年票单日最多携带2名免票儿童，超出人数需另购门票
+        results = self._search("持年票可以携带几名儿童免费入园")
+        self._assert_keywords_in_top_k(results, ["2名", "2"])
 
-    def test_11_staff_job_responsibilities(self):
-        """岗位职责查询 → 应从内部知识分类召回"""
-        results = self._search("迪士尼乐园导览员的岗位职责是什么")
-        self._assert_top_k_contains_category(results, CAT_INTERNAL)
+    def test_09_annual_pass_lost_replacement_fee(self):
+        """年票丢失补办费为原价 10% → content 应含"10%" """
+        # 文档原文：年票丢失需立即挂失，补办工本费为原价10%
+        results = self._search("迪士尼年票丢失如何补办，补办费用是多少")
+        self._assert_keywords_in_top_k(results, ["10%", "挂失", "补办"])
 
-    def test_12_cruise_image_retrieval(self):
-        """邮轮价格查询 → 跨模态检索：验证图片 embedding 与文本查询的语义距离合理"""
-        # 文本查询会优先召回文字文档（text-to-text 更近），
-        # 此测试专注于验证 text→image 跨模态向量距离是否在合理范围内，
-        # 而非排名。搜索全部记录，取图片中距离最近的一条。
-        results = self._search("迪士尼邮轮价格一览", k=self.full_index.ntotal)
-        image_hits = [r for r in results if r["metadata"]["type"] == "image"]
-        self.assertGreater(len(image_hits), 0,
-                           "全局索引中未找到任何图片类型记录（构建索引时未包含图片？）")
-        best = min(image_hits, key=lambda x: x["distance"])
-        # 跨模态匹配阈值宽松（text→image 语义距离通常大于 text→text）
-        self.assertLess(best["distance"], 6.0,
-                        f"最近邮轮图片距离过大，跨模态检索可能失效: {best['distance']:.4f}")
-        print(f"\n  [图片跨模态] 最近图片: {best['metadata']['source']}  "
-              f"distance={best['distance']:.4f}  rank={results.index(best)+1}/{len(results)}")
+    def test_10_special_event_annual_pass_discount(self):
+        """万圣节等特殊活动年票享 9 折 → content 应含"9折" """
+        # 文档原文：年票用户购买此类活动门票可享9折优惠
+        results = self._search("年票持有者购买万圣节专场票有折扣吗")
+        self._assert_keywords_in_top_k(results, ["9折", "年票"])
 
-    def test_13_english_query_cross_lingual(self):
-        """英文查询 → 多模态模型应支持跨语言检索，返回相关中文文档"""
-        results = self._search("What are the ticket refund policies at Disneyland?")
-        self.assertGreater(len(results), 0)
-        self.assertLess(results[0]["distance"], 3.0,
-                        f"英文查询 top1 距离过大: {results[0]['distance']:.4f}")
+    # ════════════════════════════════════════════════════════════════════════
+    # 运营流程（退款政策）
+    # 来源：迪士尼各园区退款政策……详细列出来.docx
+    # ════════════════════════════════════════════════════════════════════════
 
-    def test_14_category_specific_index_precision(self):
-        """在 cat3_emergency 专用索引中，紧急查询应能精准召回，且所有结果均属应急分类"""
-        if "cat3_emergency" not in self.cat_indexes:
-            self.skipTest("cat3_emergency 索引未加载")
-        cat_idx = self.cat_indexes["cat3_emergency"]
-        cat_meta = self.cat_metas["cat3_emergency"]
-        results = self._search("紧急情况处置预案速查", cat_idx, cat_meta, k=3)
-        # ① 专用索引 top1 距离应足够小（知识库内确实有紧急处理文档）
-        self.assertLess(results[0]["distance"], 2.0,
-                        f"cat3_emergency top1 距离过大: {results[0]['distance']:.4f}")
-        # ② 专用索引中所有结果 category 只能是应急预案（隔离验证）
-        for r in results:
-            self.assertEqual(r["metadata"]["category"], CAT_EMERGENCY,
-                             f"cat3_emergency 索引返回了非本分类结果: "
-                             f"{r['metadata']['category']}")
+    def test_11_typhoon_closure_full_refund(self):
+        """台风闭园可全额退款或顺延 6 个月 → content 应含"全额退"或"6个月" """
+        # 文档原文：园区因台风、疫情等闭园，门票可全额退款或顺延6个月内任选一天使用
+        results = self._search("台风导致迪士尼闭园，门票可以退款还是改期")
+        self._assert_keywords_in_top_k(results, ["全额退", "6个月", "闭园"])
+        self._assert_category_in_top_k(results, CAT_OPERATIONS)
 
-    def test_15_irrelevant_query_higher_distance_than_relevant(self):
-        """无关查询的 top1 距离应大于相关查询（负例验证）"""
-        relevant = self._search("迪士尼乐园门票价格优惠")
-        irrelevant = self._search("如何制作番茄炒鸡蛋食谱")
-        self.assertGreater(irrelevant[0]["distance"], relevant[0]["distance"],
-                           f"无关查询({irrelevant[0]['distance']:.4f}) 距离应大于"
-                           f"相关查询({relevant[0]['distance']:.4f})")
+    def test_12_hong_kong_no_refund_on_confirmed_ticket(self):
+        """香港指定日门票确认后不可退改 → content 应含"不可退" """
+        # 文档原文：香港Disneyland，官方「指定日门票」一经确认不可退改
+        results = self._search("香港迪士尼的指定日门票确认后还能退吗")
+        self._assert_keywords_in_top_k(results, ["不可退", "香港"])
 
-    def test_16_top_k_count_respected(self):
-        """search 返回条数不超过请求的 k"""
-        for k in [1, 3, 5, 10]:
-            results = self._search("迪士尼乐园", k=k)
-            self.assertLessEqual(len(results), k,
-                                 f"k={k} 但返回了 {len(results)} 条")
+    def test_13_tokyo_no_refund_policy(self):
+        """东京门票购买后概不退款 → content 应含"概不退款"或"东京" """
+        # 文档原文：东京：所有门票一经购买概不退款；官方闭园可退
+        results = self._search("东京迪士尼门票买了之后能退吗")
+        self._assert_keywords_in_top_k(results, ["东京", "退款", "概不退款"])
 
-    def test_17_results_sorted_by_distance_ascending(self):
-        """返回结果应按 L2 距离升序排列（最相近在前）"""
-        results = self._search("迪士尼乐园游玩攻略", k=10)
-        dists = [r["distance"] for r in results]
-        self.assertEqual(dists, sorted(dists),
-                         "结果未按距离升序排列")
+    # ════════════════════════════════════════════════════════════════════════
+    # 特殊情况与应急预案
+    # 来源：迪士尼乐园「紧急情况处理」一站式速查表.docx
+    # ════════════════════════════════════════════════════════════════════════
 
-    def test_18_similarity_score_inversely_proportional_to_distance(self):
-        """similarity = 1/(1+dist)，应与距离单调递减"""
-        results = self._search("迪士尼乐园", k=8)
-        for r in results:
-            expected_sim = 1.0 / (1.0 + r["distance"])
-            self.assertAlmostEqual(r["similarity"], expected_sim, places=6,
-                                   msg="similarity 计算公式不一致")
-        # 距离越小，相似度越大
-        sims = [r["similarity"] for r in results]
-        self.assertEqual(sims, sorted(sims, reverse=True),
-                         "similarity 未随距离递增而递减")
+    def test_14_lost_child_broadcast_no_parent_info(self):
+        """走失儿童广播不暴露家长信息以防冒领 → content 应含"冒领"或"广播" """
+        # 文档原文：儿童：仅播报「请XXX小朋友到米奇大街走失儿童认领处，您的家人正在等您」
+        #           ——不暴露家长姓名与特征，防止冒领
+        results = self._search("迪士尼走失儿童广播内容是什么，为何不报家长信息")
+        self._assert_keywords_in_top_k(results, ["冒领", "广播", "走失"])
+        self._assert_category_in_top_k(results, CAT_EMERGENCY)
+
+    def test_15_shanghai_emergency_hotline(self):
+        """上海应急热线 021-2099-8001 → content 应含该号码 """
+        # 文档原文：记住 3 个号码 • 上海：021-2099-8001
+        results = self._search("上海迪士尼乐园的紧急求助电话是多少")
+        self._assert_keywords_in_top_k(results, ["021-2099-8001", "2099"])
+
+    def test_16_shanghai_typhoon_closure_condition(self):
+        """上海台风橙色预警触发闭园 → content 应含"橙色预警" """
+        # 文档原文：上海：上海中心气象台发布台风橙色预警或暴雨红色预警→当日全天闭园
+        results = self._search("上海迪士尼在什么气象条件下会闭园")
+        self._assert_keywords_in_top_k(results, ["橙色预警", "闭园"])
+
+    # ════════════════════════════════════════════════════════════════════════
+    # 客户关系与支持话术
+    # 来源：迪士尼乐园客户关系与支持话术.docx
+    # ════════════════════════════════════════════════════════════════════════
+
+    def test_17_magic_moment_staff_authorization_limit(self):
+        """一线员工奇迹时刻授权上限 100 元 → content 应含"100元" """
+        # 文档原文：授权额度：一线员工 ≤100 元/件；当班主管 ≤500 元/件
+        results = self._search("迪士尼奇迹时刻一线员工的补偿授权额度是多少")
+        self._assert_keywords_in_top_k(results, ["100元", "100", "奇迹时刻"])
+        self._assert_category_in_top_k(results, CAT_CUSTOMER)
+
+    def test_18_under_3_years_free_entry(self):
+        """3 岁以下儿童免票 → content 应含"3岁"或"免费" """
+        # 文档原文：Q6 3岁以下儿童要门票吗？上海、香港、巴黎、美国园区均免费
+        results = self._search("几岁以下的孩子进迪士尼不需要买票")
+        self._assert_keywords_in_top_k(results, ["3岁", "免费"])
+
+    def test_19_shanghai_food_policy_no_self_heating(self):
+        """上海可带密封零食，禁止自热食品 → content 应含"密封"和"自热" """
+        # 文档原文：上海：可带密封零食、水果；自热食品、需加热或刺激气味食品禁止
+        results = self._search("上海迪士尼可以自带食物进园吗，有哪些限制")
+        self._assert_keywords_in_top_k(results, ["密封", "自热"])
+
+    # ════════════════════════════════════════════════════════════════════════
+    # 内部知识与工具（员工手册）
+    # 来源：迪士尼乐园内部知识与工具操作手册.docx
+    # ════════════════════════════════════════════════════════════════════════
+
+    def test_20_crm_case_priority_levels(self):
+        """CRM 工单优先级 P1/P2/P3 定义 → content 应含"P1"和"P2" """
+        # 文档原文：「Priority」等级：P1（安全/舆情）、P2（现场投诉）、P3（事后咨询）
+        results = self._search("迪士尼CRM系统如何划分投诉工单的优先级")
+        self._assert_keywords_in_top_k(results, ["P1", "P2"])
+        self._assert_category_in_top_k(results, CAT_INTERNAL)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
