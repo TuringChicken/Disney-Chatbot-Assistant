@@ -4,12 +4,17 @@
 运行: python 6-disney_app.py
 """
 import os
+import re
 import json
+import base64
 import numpy as np
 import faiss
+import jieba
 import dashscope
 from http import HTTPStatus
 from openai import OpenAI
+from rank_bm25 import BM25Okapi
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import gradio as gr
 
 # ─── 配置 ───────────────────────────────────────────────────────────────────
@@ -23,7 +28,7 @@ client = OpenAI(
     base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"
 )
 
-MULTIMODAL_EMBEDDING_MODEL = "tongyi-embedding-vision-plus"
+MULTIMODAL_EMBEDDING_MODEL = "qwen3-vl-embedding"
 
 # 新知识库目录：由 7-disney_build_full_index.py 生成，包含全量索引和5个分类子索引
 # 旧的单文件索引（disney_index.faiss / disney_metadata.json）已废弃
@@ -40,11 +45,11 @@ CATEGORY_INDEXES = {
     "客户关系与支持话术":   (os.path.join(INDEX_DIR, "cat4_customer_index.faiss"),  os.path.join(INDEX_DIR, "cat4_customer_metadata.json")),
     "内部知识与工具":     (os.path.join(INDEX_DIR, "cat5_internal_index.faiss"),  os.path.join(INDEX_DIR, "cat5_internal_metadata.json")),
 }
-IMAGE_KEYWORDS = ["图片", "海报", "照片", "看看", "长什么样", "图",
-                  "image", "photo", "poster", "picture", "show", "look", "see"]
-VIDEO_KEYWORDS = ["视频", "录像", "影片", "看一下", "播放",
-                  "video", "watch", "play", "clip", "footage"]
-MEDIA_DISTANCE_THRESHOLD = 3.0
+RRF_K          = 60   # RRF 常数，控制排名影响的衰减幅度
+RETRIEVAL_TOP_K = 10   # 每路检索（文字向量 / 图像向量 / BM25）各取 top-k
+RRF_TOP_K       = 15   # RRF 融合后保留 top-k 进入重排序
+RERANK_TOP_K    = 5   # Qwen3-VL 重排序后最终保留 top-k
+VL_RERANK_MODEL = "qwen-vl-max"  # Qwen3-VL 重排序模型（可改为 qwen3-vl-72b-instruct）
 
 # 自动分类路由规则：按特征关键词匹配，命中数最多的分类胜出，无命中则使用全量索引
 # 顺序不影响结果，关键词尽量选取分类内独有的、区分度高的词
@@ -114,6 +119,26 @@ def get_index(category: str):
     return _index_cache[category]
 
 
+def _tokenize(text: str) -> list:
+    """jieba 分词 + 英文/数字提取，过滤空白与纯标点"""
+    return [t for t in jieba.lcut(text.lower())
+            if t.strip() and not re.fullmatch(r'\W+', t)]
+
+
+_bm25_cache: dict = {}
+
+
+def _build_bm25(metadata: list) -> BM25Okapi:
+    return BM25Okapi([_tokenize(m["content"]) for m in metadata])
+
+
+def get_bm25(category: str) -> BM25Okapi:
+    if category not in _bm25_cache:
+        _, meta = get_index(category)
+        _bm25_cache[category] = _build_bm25(meta) if meta is not None else None
+    return _bm25_cache[category]
+
+
 def get_text_embedding(text):
     resp = dashscope.MultiModalEmbedding.call(
         model=MULTIMODAL_EMBEDDING_MODEL,
@@ -130,47 +155,178 @@ def detect_language(text):
     return "zh" if len(text) > 0 and chinese / len(text) > 0.2 else "en"
 
 
-def detect_media_intent(query):
-    q = query.lower()
-    return (
-        any(kw in q for kw in IMAGE_KEYWORDS),
-        any(kw in q for kw in VIDEO_KEYWORDS)
-    )
 
+# ─── 检索阶段：三路独立通道 ─────────────────────────────────────────────────
 
-def rag_query(query, index, metadata, k=3, category="全部"):
-    vec = np.array([get_text_embedding(query)]).astype("float32")
-    distances, indices = index.search(vec, index.ntotal)
-
-    results = []
-    for idx, dist in zip(indices[0], distances[0]):
+def _vector_channels(query_vec: np.ndarray, index, metadata: list,
+                     k: int = RETRIEVAL_TOP_K):
+    """一次 FAISS 全量搜索，按类型拆成文字和图像两路，各取 top-k"""
+    dists, idxs = index.search(query_vec, index.ntotal)
+    text_ch, image_ch = [], []
+    for idx, dist in zip(idxs[0], dists[0]):
         if idx == -1:
             continue
-        results.append({
+        r = {
+            "doc_id": int(idx),
             "distance": float(dist),
-            "similarity": 1 / (1 + float(dist)),
-            "metadata": metadata[idx]
-        })
+            "similarity": 1.0 / (1.0 + float(dist)),
+            "bm25_score": 0.0,
+            "metadata": metadata[idx],
+        }
+        mtype = metadata[idx]["type"]
+        if mtype == "text" and len(text_ch) < k:
+            text_ch.append(r)
+        elif mtype == "image" and len(image_ch) < k:
+            image_ch.append(r)
+        if len(text_ch) >= k and len(image_ch) >= k:
+            break
+    return text_ch, image_ch
 
-    want_image, want_video = detect_media_intent(query)
-    top_texts = [r for r in results if r["metadata"]["type"] == "text"][:k]
 
-    def best_media(mtype):
-        candidates = [r for r in results
-                      if r["metadata"]["type"] == mtype
-                      and r["distance"] < MEDIA_DISTANCE_THRESHOLD]
-        return min(candidates, key=lambda x: x["distance"]) if candidates else None
+def _bm25_channel(query: str, bm25: BM25Okapi, metadata: list,
+                  k: int = RETRIEVAL_TOP_K) -> list:
+    """BM25 关键词检索，只保留 score > 0 的结果，最多取 top-k"""
+    if bm25 is None:
+        return []
+    scores = bm25.get_scores(_tokenize(query))
+    results = []
+    for idx in np.argsort(-scores):
+        if len(results) >= k:
+            break
+        if scores[idx] > 0:
+            results.append({
+                "doc_id": int(idx),
+                "distance": float("inf"),
+                "similarity": 0.0,
+                "bm25_score": float(scores[idx]),
+                "metadata": metadata[idx],
+            })
+    return results
 
-    matched_image = best_media("image") if want_image else None
-    matched_video = best_media("video") if want_video else None
+
+# ─── 融合阶段：RRF ───────────────────────────────────────────────────────────
+
+def _rrf_merge(channels: list, top_k: int = RRF_TOP_K) -> list:
+    """将多路检索结果通过 RRF 融合，返回按 rrf_score 降序的 top-k 列表"""
+    doc_rrf: dict = {}
+    doc_data: dict = {}
+    for ch in channels:
+        for rank, r in enumerate(ch):
+            did = r["doc_id"]
+            doc_rrf[did] = doc_rrf.get(did, 0.0) + 1.0 / (RRF_K + rank)
+            if did not in doc_data:
+                doc_data[did] = r
+    sorted_ids = sorted(doc_rrf, key=lambda x: -doc_rrf[x])[:top_k]
+    return [{**doc_data[did], "rrf_score": doc_rrf[did], "rerank_score": 0.0}
+            for did in sorted_ids]
+
+
+# ─── 重排序阶段：Qwen3-VL 深度语义打分 ──────────────────────────────────────
+
+def _score_text(query: str, content: str) -> float:
+    """用 Qwen3-VL 对文本候选与查询的相关性打分（0-10）"""
+    try:
+        resp = client.chat.completions.create(
+            model=VL_RERANK_MODEL,
+            messages=[
+                {"role": "system",
+                 "content": "你是相关性评分专家。严格只输出0-10之间的一个整数，不要任何其他文字。"},
+                {"role": "user",
+                 "content": f"查询：{query}\n\n文档（节选）：{content[:600]}\n\n相关性分数："}
+            ],
+            max_tokens=4,
+        )
+        m = re.search(r'\d+', resp.choices[0].message.content.strip())
+        return min(10.0, float(m.group())) if m else 5.0
+    except Exception:
+        return 5.0
+
+
+def _score_image(query: str, image_path: str) -> float:
+    """用 Qwen3-VL 对图片候选与查询的相关性打分（0-10）"""
+    try:
+        with open(image_path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode()
+        ext = os.path.splitext(image_path)[1].lower().lstrip(".")
+        mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg",
+                "png": "image/png"}.get(ext, "image/jpeg")
+        resp = client.chat.completions.create(
+            model=VL_RERANK_MODEL,
+            messages=[
+                {"role": "system",
+                 "content": "你是相关性评分专家。严格只输出0-10之间的一个整数，不要任何其他文字。"},
+                {"role": "user",
+                 "content": [
+                     {"type": "image_url",
+                      "image_url": {"url": f"data:{mime};base64,{b64}"}},
+                     {"type": "text",
+                      "text": f"查询：{query}\n\n上图与查询的相关性分数（0-10整数）："}
+                 ]}
+            ],
+            max_tokens=4,
+        )
+        m = re.search(r'\d+', resp.choices[0].message.content.strip())
+        return min(10.0, float(m.group())) if m else 5.0
+    except Exception:
+        return 5.0
+
+
+def _score_relevance(query: str, result: dict) -> float:
+    """根据结果类型分发到对应的打分函数"""
+    if result["metadata"]["type"] == "image":
+        raw = result["metadata"].get("path", "")
+        abs_path = os.path.abspath(raw) if raw else ""
+        if abs_path and os.path.exists(abs_path):
+            return _score_image(query, abs_path)
+    return _score_text(query, result["metadata"].get("content", ""))
+
+
+def _rerank_with_vl(query: str, candidates: list,
+                    top_k: int = RERANK_TOP_K) -> list:
+    """并发调用 Qwen3-VL 对 RRF top-k 候选深度重排序，返回最终 top-k"""
+    scores: dict = {}
+    with ThreadPoolExecutor(max_workers=min(len(candidates), 4)) as pool:
+        futures = {pool.submit(_score_relevance, query, r): i
+                   for i, r in enumerate(candidates)}
+        for fut in as_completed(futures):
+            i = futures[fut]
+            scores[i] = fut.result() if not fut.exception() else 5.0
+
+    scored = [{**candidates[i], "rerank_score": scores.get(i, 5.0)}
+              for i in range(len(candidates))]
+    scored.sort(key=lambda x: -x["rerank_score"])
+    print("[重排序] " + " | ".join(
+        f"{r['metadata']['source'][:15]}={r['rerank_score']:.0f}" for r in scored))
+    return scored[:top_k]
+
+
+def rag_query(query, index, metadata, k=RERANK_TOP_K, category="全部"):
+    # ── 阶段一：内容召回（三路独立，各取 top-5） ─────────────────────────────
+    query_vec = np.array([get_text_embedding(query)]).astype("float32")
+    bm25      = get_bm25(category)
+
+    text_ch, image_ch = _vector_channels(query_vec, index, metadata, k=RETRIEVAL_TOP_K)
+    bm25_ch           = _bm25_channel(query, bm25, metadata, k=RETRIEVAL_TOP_K)
+    print(f"[召回] 文字向量:{len(text_ch)}  图像向量:{len(image_ch)}  BM25:{len(bm25_ch)}")
+
+    # ── 阶段二：RRF 融合三路结果 → top-7 ─────────────────────────────────────
+    fused = _rrf_merge([text_ch, image_ch, bm25_ch], top_k=RRF_TOP_K)
+    print(f"[RRF] top-{len(fused)}: {[r['metadata']['source'][:18] for r in fused]}")
+
+    # ── 阶段三：Qwen3-VL 深度语义重排序 → top-3 ──────────────────────────────
+    reranked = _rerank_with_vl(query, fused, top_k=k)
+
+    # ── 阶段四：生成回答 ──────────────────────────────────────────────────────
+    top_texts     = [r for r in reranked if r["metadata"]["type"] == "text"]
+    matched_image = next((r for r in reranked if r["metadata"]["type"] == "image"), None)
+    matched_video = next((r for r in reranked if r["metadata"]["type"] == "video"), None)
 
     context_str = "".join(
-        f"背景知识 {i+1} (来源: {r['metadata']['source']}, 相似度: {r['similarity']:.4f}):\n"
+        f"背景知识 {i+1} (来源: {r['metadata']['source']}, 重排得分: {r['rerank_score']:.1f}/10):\n"
         f"{r['metadata']['content']}\n\n"
         for i, r in enumerate(top_texts)
     )
 
-    # 告知 LLM 已检索到的媒体资源，避免它说"无法展示图片/视频"
     media_hint = ""
     if matched_image:
         media_hint += "\n\n[系统提示：已检索到相关图片，将在界面右侧展示，请在回答中引导用户查看右侧图片区域，不要说无法提供图片。]"
@@ -180,43 +336,47 @@ def rag_query(query, index, metadata, k=3, category="全部"):
     lang = detect_language(query)
     if lang == "en":
         system_prompt = "You are a helpful Disney customer service assistant. Be concise and friendly. You MUST reply in English regardless of the language of the background knowledge."
-        user_prompt = f"Answer the user's question based on the following background knowledge.\n\n[Background Knowledge]\n{context_str}\n[User Question]\n{query}{media_hint}"
+        user_prompt   = f"Answer the user's question based on the following background knowledge.\n\n[Background Knowledge]\n{context_str}\n[User Question]\n{query}{media_hint}"
     else:
         system_prompt = "你是一个专业友好的迪士尼客服助手，回答简洁清晰。必须用中文回答。"
-        user_prompt = f"请根据以下背景知识回答用户问题。\n\n[背景知识]\n{context_str}\n[用户问题]\n{query}{media_hint}"
+        user_prompt   = f"请根据以下背景知识回答用户问题。\n\n[背景知识]\n{context_str}\n[用户问题]\n{query}{media_hint}"
 
     completion = client.chat.completions.create(
         model="qwen-flash",
         messages=[
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
+            {"role": "user",   "content": user_prompt}
         ]
     )
 
-    # 将图片路径转为绝对路径，避免工作目录不同导致图片加载失败
     image_path = None
     if matched_image:
-        raw_path = matched_image["metadata"].get("path", "")
-        image_path = os.path.abspath(raw_path) if raw_path else None
+        raw = matched_image["metadata"].get("path", "")
+        image_path = os.path.abspath(raw) if raw else None
 
     return {
-        "answer": completion.choices[0].message.content,
+        "answer":    completion.choices[0].message.content,
         "image_path": image_path,
         "video_url": matched_video["metadata"].get("url") if matched_video else None,
         "sources": [
             {
-                "category": r["metadata"].get("category", "-"),
-                "source": r["metadata"]["source"],
-                "similarity": r["similarity"],
-                "content": r["metadata"]["content"][:100]
+                "category":     r["metadata"].get("category", "-"),
+                "source":       r["metadata"]["source"],
+                "rerank_score": r["rerank_score"],
+                "rrf_score":    r["rrf_score"],
+                "content":      r["metadata"]["content"][:100],
             }
-            for r in top_texts
+            for r in reranked
         ]
     }
 
 
-# ─── 预加载全量索引 ──────────────────────────────────────────────────────────
+# ─── 预加载全量索引 + BM25 ───────────────────────────────────────────────────
 _index_cache["全部"] = load_index(FULL_INDEX_FILE, FULL_METADATA_FILE)
+_, _preload_meta = _index_cache["全部"]
+if _preload_meta is not None:
+    _bm25_cache["全部"] = _build_bm25(_preload_meta)
+    print(f"BM25 已预建: 全部 ({len(_preload_meta)} 条记录)")
 
 
 # ─── Gradio 事件处理 ─────────────────────────────────────────────────────────
@@ -265,9 +425,11 @@ def on_bot_respond(last_query, history):
     else:
         video_update = gr.update(value="", visible=False)
 
-    sources_md = "| 分类 | 来源文件 | 相似度 | 内容摘要 |\n|------|---------|--------|----------|\n"
+    sources_md = "| 分类 | 来源文件 | 重排得分 | RRF分 | 内容摘要 |\n|------|---------|---------|-------|----------|\n"
     for s in result["sources"]:
-        sources_md += f"| {s.get('category', '-')} | {s['source']} | {s['similarity']:.4f} | {s['content']}... |\n"
+        sources_md += (f"| {s.get('category', '-')} | {s['source']} "
+                       f"| {s['rerank_score']:.1f}/10 | {s['rrf_score']:.4f} "
+                       f"| {s['content']}... |\n")
 
     return history, img_update, video_update, sources_md
 

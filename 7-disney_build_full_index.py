@@ -58,7 +58,7 @@ dashscope.api_key = DASHSCOPE_API_KEY
 
 KB_ROOT = "Disney_RAG_KnowledgeBase"
 OUTPUT_DIR = "disney_indexes"
-MULTIMODAL_EMBEDDING_MODEL = "tongyi-embedding-vision-plus"
+MULTIMODAL_EMBEDDING_MODEL = "qwen3-vl-embedding"
 CHUNK_SIZE = 500
 CHUNK_OVERLAP = 50
 IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.gif', '.bmp'}
