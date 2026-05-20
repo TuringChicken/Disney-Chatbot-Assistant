@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>开发日志 · 迪士尼RAG助手 · 2026-05-20</title>
+  <style>
+    :root {
+      --primary: #1a4fbd;
+      --primary-light: #e8effe;
+      --accent: #e63946;
+      --success: #2a9d5c;
+      --warning: #e07b00;
+      --bg: #f5f7fa;
+      --card: #ffffff;
+      --border: #dee3ec;
+      --text: #1e2330;
+      --muted: #6b7280;
+      --code-bg: #1e2330;
+      --code-text: #e8effe;
+      --radius: 10px;
+      --shadow: 0 2px 12px rgba(0,0,0,0.08);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 15px;
+      line-height: 1.7;
+    }
+
+    /* ── Header ── */
+    header {
+      background: linear-gradient(135deg, #1a4fbd 0%, #0d2b7a 100%);
+      color: #fff;
+      padding: 48px 40px 36px;
+    }
+    header .badge {
+      display: inline-block;
+      background: rgba(255,255,255,0.18);
+      border: 1px solid rgba(255,255,255,0.35);
+      border-radius: 20px;
+      padding: 3px 14px;
+      font-size: 12px;
+      letter-spacing: 0.5px;
+      margin-bottom: 16px;
+    }
+    header h1 { font-size: 28px; font-weight: 700; margin-bottom: 8px; }
+    header .meta { font-size: 13px; opacity: 0.75; }
+    header .meta span { margin-right: 20px; }
+
+    /* ── Layout ── */
+    .container { max-width: 960px; margin: 0 auto; padding: 36px 24px 60px; }
+
+    /* ── Section ── */
+    section { margin-bottom: 40px; }
+    section h2 {
+      font-size: 17px;
+      font-weight: 700;
+      color: var(--primary);
+      border-left: 4px solid var(--primary);
+      padding-left: 12px;
+      margin-bottom: 18px;
+    }
+
+    /* ── Card ── */
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 22px 26px;
+      margin-bottom: 18px;
+    }
+    .card h3 {
+      font-size: 15px;
+      font-weight: 700;
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .card p { color: var(--muted); margin-bottom: 6px; }
+
+    /* ── Tag ── */
+    .tag {
+      display: inline-block;
+      border-radius: 4px;
+      padding: 2px 9px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.3px;
+    }
+    .tag-new      { background: #dff5ea; color: #1b7a43; }
+    .tag-fix      { background: #fde8e8; color: #b91c1c; }
+    .tag-refactor { background: #e8f0fe; color: #1a4fbd; }
+    .tag-upgrade  { background: #f3e8ff; color: #6b21a8; }
+
+    /* ── Code block ── */
+    pre {
+      background: var(--code-bg);
+      color: var(--code-text);
+      border-radius: 8px;
+      padding: 16px 20px;
+      overflow-x: auto;
+      font-size: 13px;
+      line-height: 1.6;
+      margin: 12px 0;
+    }
+    code { font-family: "Cascadia Code", "Fira Code", Consolas, monospace; }
+    p > code, li > code {
+      background: #f0f2f7;
+      color: var(--accent);
+      border-radius: 4px;
+      padding: 1px 6px;
+      font-size: 13px;
+    }
+
+    /* ── Table ── */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+      margin-top: 10px;
+    }
+    thead tr { background: var(--primary-light); }
+    th { text-align: left; padding: 9px 14px; font-weight: 600; color: var(--primary); }
+    td { padding: 9px 14px; border-top: 1px solid var(--border); vertical-align: top; }
+    tr:hover td { background: #f9fafc; }
+
+    /* ── List ── */
+    ul, ol { padding-left: 22px; }
+    li { margin-bottom: 5px; }
+
+    /* ── Status pill ── */
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      border-radius: 20px;
+      padding: 3px 12px;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; }
+    .pill-pass  { background: #dff5ea; color: #1b7a43; }
+    .pill-pass::before  { background: #2a9d5c; }
+    .pill-warn  { background: #fef3c7; color: #92400e; }
+    .pill-warn::before  { background: #e07b00; }
+
+    /* ── Architecture diagram ── */
+    .arch {
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+      align-items: center;
+      padding: 10px 0;
+    }
+    .arch-box {
+      background: var(--primary-light);
+      border: 1.5px solid var(--primary);
+      border-radius: 8px;
+      padding: 10px 28px;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--primary);
+      min-width: 260px;
+      text-align: center;
+    }
+    .arch-arrow {
+      font-size: 20px;
+      color: var(--muted);
+      line-height: 1.2;
+      margin: 2px 0;
+    }
+    .arch-split {
+      display: flex;
+      gap: 12px;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+    .arch-split .arch-box {
+      background: #fff8e1;
+      border-color: #e07b00;
+      color: #7a4a00;
+      font-size: 13px;
+      min-width: 140px;
+      padding: 8px 14px;
+    }
+    .arch-box.green {
+      background: #dff5ea;
+      border-color: #2a9d5c;
+      color: #1b5e35;
+    }
+    .arch-box.purple {
+      background: #f3e8ff;
+      border-color: #7c3aed;
+      color: #4c1d95;
+    }
+
+    /* ── Timeline ── */
+    .timeline { border-left: 3px solid var(--primary-light); padding-left: 22px; }
+    .timeline-item { position: relative; margin-bottom: 22px; }
+    .timeline-item::before {
+      content: "";
+      position: absolute;
+      left: -29px;
+      top: 6px;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: var(--primary);
+      border: 2px solid #fff;
+      box-shadow: 0 0 0 2px var(--primary);
+    }
+    .timeline-item h4 { font-size: 14px; font-weight: 700; margin-bottom: 4px; }
+    .timeline-item p  { font-size: 13px; color: var(--muted); }
+
+    /* ── Comparison table ── */
+    .compare-old { background: #fde8e8; }
+    .compare-new { background: #dff5ea; }
+
+    /* ── Footer ── */
+    footer {
+      text-align: center;
+      font-size: 12px;
+      color: var(--muted);
+      padding: 24px 0 40px;
+      border-top: 1px solid var(--border);
+      margin-top: 20px;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="badge">迪士尼RAG助手 · 开发日志</div>
+  <h1>混合检索架构升级与 Embedding 模型迁移</h1>
+  <div class="meta">
+    <span>日期：2026-05-20</span>
+    <span>项目目录：CASE-迪士尼RAG助手</span>
+    <span>分支：main</span>
+  </div>
+</header>
+
+<div class="container">
+
+  <!-- ── 概览 ── -->
+  <section>
+    <h2>今日工作概览</h2>
+    <div class="card">
+      <p>本次开发在 2026-05-17 自动路由版本基础上，完成了两项重大升级：</p>
+      <ol style="margin-top:10px">
+        <li><strong>RAG 检索架构全面重写</strong>：引入 BM25 关键词检索（jieba 分词）+ 向量检索（文本通道 + 图像通道）三路召回，通过 RRF 融合后由 Qwen3-VL 模型深度重排序，从根本上解决图片召回缺失问题。</li>
+        <li><strong>Embedding 模型升级</strong>：将向量化模型从 <code>tongyi-embedding-vision-plus</code> 迁移至 <code>qwen3-vl-embedding</code>，删除旧索引并完整重建全部 6 个 FAISS 向量数据库（305 条记录）。</li>
+      </ol>
+    </div>
+  </section>
+
+  <!-- ── 架构对比 ── -->
+  <section>
+    <h2>检索架构对比</h2>
+    <div class="card">
+      <table>
+        <thead><tr><th>维度</th><th class="compare-old">旧版（2026-05-17）</th><th class="compare-new">新版（2026-05-20）</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>召回方式</td>
+            <td class="compare-old">单路向量检索（FAISS top-k）</td>
+            <td class="compare-new">三路独立召回（文本向量 + 图像向量 + BM25）</td>
+          </tr>
+          <tr>
+            <td>分词</td>
+            <td class="compare-old">无</td>
+            <td class="compare-new">jieba + 英文/数字过滤</td>
+          </tr>
+          <tr>
+            <td>融合策略</td>
+            <td class="compare-old">直接按 L2 距离排序</td>
+            <td class="compare-new">RRF（Reciprocal Rank Fusion，K=60）</td>
+          </tr>
+          <tr>
+            <td>重排序</td>
+            <td class="compare-old">无</td>
+            <td class="compare-new">Qwen3-VL 深度语义评分（0–10 分），并发执行</td>
+          </tr>
+          <tr>
+            <td>图片召回</td>
+            <td class="compare-old">依赖关键词触发（如"海报"、"图片"）</td>
+            <td class="compare-new">独立图像向量通道 + BM25，无需关键词触发</td>
+          </tr>
+          <tr>
+            <td>最终结果</td>
+            <td class="compare-old">top-5 文本块</td>
+            <td class="compare-new">重排后 top-5（含文本 + 图片混排）</td>
+          </tr>
+          <tr>
+            <td>Embedding 模型</td>
+            <td class="compare-old">tongyi-embedding-vision-plus</td>
+            <td class="compare-new">qwen3-vl-embedding</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ── 新架构流程图 ── -->
+  <section>
+    <h2>新检索架构流程</h2>
+    <div class="card">
+      <div class="arch">
+        <div class="arch-box">用户输入 Query</div>
+        <div class="arch-arrow">↓</div>
+        <div class="arch-box">auto_detect_category() → 路由到分类索引</div>
+        <div class="arch-arrow">↓ 三路独立召回（各 top-10）</div>
+        <div class="arch-split">
+          <div class="arch-box">文本向量通道<br><span style="font-size:12px;font-weight:400">FAISS L2 · text 类型</span></div>
+          <div class="arch-box">图像向量通道<br><span style="font-size:12px;font-weight:400">FAISS L2 · image 类型</span></div>
+          <div class="arch-box">BM25 关键词通道<br><span style="font-size:12px;font-weight:400">jieba 分词 · score &gt; 0</span></div>
+        </div>
+        <div class="arch-arrow">↓</div>
+        <div class="arch-box green">RRF 融合 → top-15<br><span style="font-size:12px;font-weight:400">score += 1 / (60 + rank)，三路合并去重</span></div>
+        <div class="arch-arrow">↓</div>
+        <div class="arch-box purple">Qwen3-VL 重排序 → top-5<br><span style="font-size:12px;font-weight:400">并发评分（max 4 workers）· 文本 / 图片分别打分</span></div>
+        <div class="arch-arrow">↓</div>
+        <div class="arch-box">qwen-flash 生成回答 + 图片展示</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── 文件变更 ── -->
+  <section>
+    <h2>文件变更</h2>
+
+    <div class="card">
+      <h3><span class="tag tag-refactor">REFACTOR</span> 6-disney_app.py — 检索核心重写</h3>
+      <p>新增依赖：<code>jieba</code>、<code>rank_bm25.BM25Okapi</code>、<code>concurrent.futures.ThreadPoolExecutor</code>。</p>
+      <table>
+        <thead><tr><th>新增 / 修改项</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>常量调整</td>
+            <td><code>RETRIEVAL_TOP_K=10</code>（每路召回）、<code>RRF_TOP_K=15</code>（融合后）、<code>RERANK_TOP_K=5</code>（重排后）、<code>VL_RERANK_MODEL="qwen-vl-max"</code></td>
+          </tr>
+          <tr>
+            <td><code>_tokenize(text)</code></td>
+            <td>jieba 结巴分词，转小写后过滤空白与纯标点符号，用于 BM25 索引构建和查询分词</td>
+          </tr>
+          <tr>
+            <td><code>_bm25_cache</code> / <code>get_bm25(category)</code></td>
+            <td>按分类懒加载并缓存 BM25 索引，避免重复构建；元数据中仅对 <code>type=="text"</code> 条目分词</td>
+          </tr>
+          <tr>
+            <td><code>_vector_channels(query_vec, index, metadata, k)</code></td>
+            <td>一次 FAISS 全量搜索，按 <code>metadata[i]["type"]</code> 将结果拆分为文本通道和图像通道，各取 top-k</td>
+          </tr>
+          <tr>
+            <td><code>_bm25_channel(query, bm25, metadata, k)</code></td>
+            <td>BM25 打分，仅保留 <code>score &gt; 0</code> 的结果，最多取 top-k</td>
+          </tr>
+          <tr>
+            <td><code>_rrf_merge(channels, top_k)</code></td>
+            <td>标准 RRF：对每路结果按排名累加 <code>1/(K+rank)</code>，合并后按总分降序取 top_k，结果携带 <code>rrf_score</code> 字段</td>
+          </tr>
+          <tr>
+            <td><code>_score_text(query, content)</code></td>
+            <td>调用 <code>qwen-vl-max</code> 对文本片段打 0–10 相关性分，解析 JSON 响应中的 <code>score</code> 字段</td>
+          </tr>
+          <tr>
+            <td><code>_score_image(query, image_path)</code></td>
+            <td>将图片 Base64 编码后传入 <code>qwen-vl-max</code>，打 0–10 视觉相关性分</td>
+          </tr>
+          <tr>
+            <td><code>_rerank_with_vl(query, candidates, top_k)</code></td>
+            <td><code>ThreadPoolExecutor(max_workers=min(len,4))</code> 并发对候选集评分，按分数降序取 top_k，结果携带 <code>rerank_score</code> 字段</td>
+          </tr>
+          <tr>
+            <td><code>rag_query()</code> 重构</td>
+            <td>由原单路向量检索重写为四阶段流水线：三路召回 → RRF 融合 → VL 重排序 → qwen-flash 生成</td>
+          </tr>
+          <tr>
+            <td>来源展示增强</td>
+            <td>Sources 表格新增 <code>重排得分</code>、<code>RRF分</code> 两列，便于调试检索质量</td>
+          </tr>
+          <tr>
+            <td>Embedding 模型</td>
+            <td><code>MULTIMODAL_EMBEDDING_MODEL</code>：<code>"tongyi-embedding-vision-plus"</code> → <code>"qwen3-vl-embedding"</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h3><span class="tag tag-upgrade">UPGRADE</span> 7-disney_build_full_index.py — Embedding 模型升级</h3>
+      <p>仅修改一处常量：</p>
+      <pre><code># 修改前
+MULTIMODAL_EMBEDDING_MODEL = "tongyi-embedding-vision-plus"
+
+# 修改后
+MULTIMODAL_EMBEDDING_MODEL = "qwen3-vl-embedding"</code></pre>
+      <p>文本和图片的 Embedding 调用均通过 <code>dashscope.MultiModalEmbedding.call(model=MULTIMODAL_EMBEDDING_MODEL, ...)</code>，无需修改调用逻辑，改常量即可。</p>
+    </div>
+
+    <div class="card">
+      <h3><span class="tag tag-new">REBUILD</span> disney_indexes/ — 全量重建（305 条向量）</h3>
+      <p>删除旧索引（基于 <code>tongyi-embedding-vision-plus</code>），运行 <code>7-disney_build_full_index.py</code> 用新模型重建。</p>
+      <table>
+        <thead><tr><th>索引文件</th><th>分类</th><th>文本块</th><th>图片</th><th>合计</th></tr></thead>
+        <tbody>
+          <tr><td>disney_full_index.faiss</td><td>全局（合并）</td><td>296</td><td>9</td><td>305</td></tr>
+          <tr><td>cat1_products_index.faiss</td><td>产品与服务详情</td><td>164</td><td>9</td><td>173</td></tr>
+          <tr><td>cat2_operations_index.faiss</td><td>运营流程与标准作业程序</td><td>30</td><td>0</td><td>30</td></tr>
+          <tr><td>cat3_emergency_index.faiss</td><td>特殊情况与应急预案</td><td>12</td><td>0</td><td>12</td></tr>
+          <tr><td>cat4_customer_index.faiss</td><td>客户关系与支持话术</td><td>7</td><td>0</td><td>7</td></tr>
+          <tr><td>cat5_internal_index.faiss</td><td>内部知识与工具</td><td>78</td><td>0</td><td>78</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ── 核心实现 ── -->
+  <section>
+    <h2>核心实现：RRF 融合与 Qwen3-VL 重排序</h2>
+
+    <div class="card">
+      <h3>RRF 融合算法</h3>
+      <p>将三路召回结果合并，同一文档出现在多路时累加得分，天然实现跨通道去重与提权。</p>
+      <pre><code>def _rrf_merge(channels: list, top_k: int = RRF_TOP_K) -> list:
+    doc_rrf: dict = {}
+    doc_data: dict = {}
+    for ch in channels:
+        for rank, r in enumerate(ch):
+            did = r["doc_id"]
+            doc_rrf[did] = doc_rrf.get(did, 0.0) + 1.0 / (RRF_K + rank)
+            if did not in doc_data:
+                doc_data[did] = r
+    ranked = sorted(doc_rrf.items(), key=lambda x: -x[1])
+    result = []
+    for did, score in ranked[:top_k]:
+        entry = dict(doc_data[did])
+        entry["rrf_score"] = round(score, 6)
+        result.append(entry)
+    return result</code></pre>
+    </div>
+
+    <div class="card">
+      <h3>Qwen3-VL 并发重排序</h3>
+      <p>对 RRF top-15 候选集并发调用 VL 模型打分，文本和图片走不同评分路径，最终按分数降序取 top-5。</p>
+      <pre><code>def _rerank_with_vl(query, candidates, top_k=RERANK_TOP_K):
+    scores = {}
+    with ThreadPoolExecutor(max_workers=min(len(candidates), 4)) as pool:
+        futures = {pool.submit(_score_relevance, query, r): r["doc_id"]
+                   for r in candidates}
+        for future in as_completed(futures):
+            did = futures[future]
+            scores[did] = future.result()   # 0–10 float
+
+    ranked = sorted(candidates, key=lambda r: -scores.get(r["doc_id"], 0))
+    for r in ranked:
+        r["rerank_score"] = round(scores.get(r["doc_id"], 0), 2)
+    return ranked[:top_k]
+
+
+def _score_image(query, image_path) -> float:
+    with open(image_path, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode("utf-8")
+    mime = "jpeg" if image_path.lower().endswith((".jpg", ".jpeg")) else "png"
+    resp = client.chat.completions.create(
+        model=VL_RERANK_MODEL,
+        messages=[{"role": "user", "content": [
+            {"type": "image_url",
+             "image_url": {"url": f"data:image/{mime};base64,{b64}"}},
+            {"type": "text",
+             "text": f'请对该图片与问题的相关性打分（0-10整数）...\n问题：{query}\n仅返回JSON：{{"score": <分数>}}'},
+        ]}]
+    )
+    return float(json.loads(resp.choices[0].message.content)["score"])</code></pre>
+    </div>
+
+    <div class="card">
+      <h3>jieba BM25 分词器</h3>
+      <p><code>_tokenize()</code> 在 <code>6-disney_app.py</code> 和 <code>8-disney_rag_test.py</code> 中保持一致，确保索引构建与查询时使用相同的分词粒度。</p>
+      <pre><code>def _tokenize(text: str) -> list:
+    return [t for t in jieba.lcut(text.lower())
+            if t.strip() and not re.fullmatch(r'\W+', t)]</code></pre>
+    </div>
+  </section>
+
+  <!-- ── 问题与修复 ── -->
+  <section>
+    <h2>问题分析与修复</h2>
+
+    <div class="card">
+      <h3><span class="tag tag-fix">FIX</span> 图片召回缺失 — 根本原因与解决方案</h3>
+      <p><strong>问题：</strong>询问"迪士尼邮轮价格表"时，检索来源中没有任何图片文件，9 张邮轮价格图片完全缺失。</p>
+      <p><strong>根本原因：</strong>旧架构通过关键词（"海报"、"图片"、"图"）触发图片意图检测，用户自然语言提问不包含这些词时，图片通道根本不参与检索。即使参与，也与文本向量混在同一通道，图片向量天然语义稀疏，被文本向量压制。</p>
+      <p><strong>解决方案：</strong>为图片建立独立的向量召回通道（<code>_vector_channels</code> 拆分返回 <code>text_ch</code> 和 <code>image_ch</code>），图片在自己通道内参与 top-k 竞争，无需关键词触发；BM25 通道对图片元数据的 <code>content</code> 字段（"[图片] 迪士尼邮轮价格1.jpeg"）同样打分，进一步提升图片召回率。</p>
+    </div>
+
+    <div class="card">
+      <h3><span class="tag tag-fix">FIX</span> test_irrelevant_query 测试用例设计失败</h3>
+      <p><strong>问题：</strong><code>test_irrelevant_query_scores_zero</code>：噪声查询 <code>"xyzzy_nonsense_word_123"</code> 因其中含有 "word" 子串，而 "word" 在小语料库中 IDF 极高，导致 BM25 得分非零，测试断言 <code>score == 0</code> 失败。</p>
+      <p><strong>修复：</strong>废弃绝对零分断言，改为相对顺序测试——"邮轮价格" 查询在邮轮图片上的 BM25 得分应高于无关查询，改用 <code>assertGreater(relevant_score, irrelevant_score)</code>。</p>
+    </div>
+  </section>
+
+  <!-- ── 检索参数 ── -->
+  <section>
+    <h2>检索超参数配置</h2>
+    <div class="card">
+      <table>
+        <thead><tr><th>参数</th><th>值</th><th>含义</th></tr></thead>
+        <tbody>
+          <tr><td><code>RETRIEVAL_TOP_K</code></td><td>10</td><td>三路召回各通道独立取 top-10</td></tr>
+          <tr><td><code>RRF_K</code></td><td>60</td><td>RRF 常数，控制排名衰减幅度（越大越平滑）</td></tr>
+          <tr><td><code>RRF_TOP_K</code></td><td>15</td><td>RRF 融合后送入重排的候选数</td></tr>
+          <tr><td><code>RERANK_TOP_K</code></td><td>5</td><td>Qwen3-VL 重排后最终保留数，用于生成回答</td></tr>
+          <tr><td><code>VL_RERANK_MODEL</code></td><td>qwen-vl-max</td><td>重排序使用的多模态模型</td></tr>
+          <tr><td><code>MULTIMODAL_EMBEDDING_MODEL</code></td><td>qwen3-vl-embedding</td><td>文本和图片向量化统一使用的模型</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ── Git 提交 ── -->
+  <section>
+    <h2>Git 提交记录（今日）</h2>
+    <div class="card">
+      <div class="timeline">
+        <div class="timeline-item">
+          <h4>Upgrade embedding model to qwen3-vl-embedding and rebuild FAISS indexes</h4>
+          <p>修改两处 <code>MULTIMODAL_EMBEDDING_MODEL</code> 常量，删除旧索引，重建 6 个 FAISS 索引（305 条向量记录）</p>
+        </div>
+        <div class="timeline-item">
+          <h4>（本次 session 内 app 改动）混合检索架构重写</h4>
+          <p>新增 BM25 + jieba、三路召回通道、RRF 融合、Qwen3-VL 并发重排序，图片召回无需关键词触发</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── 已知限制 ── -->
+  <section>
+    <h2>已知限制 / 后续优化方向</h2>
+    <div class="card">
+      <ul>
+        <li><strong>重排序延迟较高：</strong>对 15 个候选并发调用 Qwen3-VL，在 4 并发下耗时约 3–6 秒；可将 <code>VL_RERANK_MODEL</code> 降级为更轻量模型（如 <code>qwen-vl-plus</code>）以换取速度。</li>
+        <li><strong>图片 BM25 得分依赖文件名：</strong>BM25 对图片的打分基于 <code>"[图片] 迪士尼邮轮价格X.jpeg"</code> 这样的内容字段，实质上是文件名匹配；若图片文件名语义不清则无效，后续可考虑在 ingestion 阶段为图片生成文字描述。</li>
+        <li><strong>Chunk 大小未按 Token 限制：</strong>当前分块按字符数（500 字）切分，不同模型的 token 计数差异可能导致部分 chunk 过长，影响向量语义聚焦度。</li>
+        <li><strong>路由关键词为静态配置：</strong>当用户使用同义词或跨类模糊查询时，路由可能错误命中分类索引；可引入向量分类器替代词频路由。</li>
+        <li><strong>缺乏端到端测试：</strong>现有测试覆盖召回阶段，重排序和生成阶段尚无自动化测试；建议补充 golden-set 评估（固定查询集对比实际回答）。</li>
+      </ul>
+    </div>
+  </section>
+
+</div>
+
+<footer>
+  迪士尼RAG助手 · 开发日志 · 2026-05-20 &nbsp;|&nbsp; 由 Claude Code 辅助生成
+</footer>
+
+</body>
+</html>
